@@ -1,5 +1,6 @@
 use crate::{Range, Rope, Selection, Tendril};
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::cmp::Ordering;
 
 mod short_ordering {
@@ -20,11 +21,12 @@ pub enum Operation {
     Insert(Tendril),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RangeOperation {
+#[derive(Debug, PartialEq, Eq)]
+pub enum RangeOperation<'a> {
     Retain(usize),
-    BeforeMarker,
-    AfterMarker,
+    // holds references to the positions
+    Start(&'a mut usize),
+    End(&'a mut usize),
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -537,13 +539,13 @@ impl Transaction {
     }
 }
 
-pub fn transform_pos<I, J>(
+pub fn transform_pos<'a, I, J>(
     operations: I,
     range_operations: J,
-) -> PosTransformer<I::IntoIter, J::IntoIter>
+) -> PosTransformer<'a, I::IntoIter, J::IntoIter>
 where
     I: IntoIterator<Item = Operation>,
-    J: IntoIterator<Item = RangeOperation>,
+    J: IntoIterator<Item = RangeOperation<'a>>,
 {
     let mut a = operations.into_iter();
     let mut b = range_operations.into_iter();
@@ -551,27 +553,27 @@ where
     let b0 = b.next();
     PosTransformer { a, b, a0, b0 }
 }
-pub struct PosTransformer<I, J> {
+pub struct PosTransformer<'a, I, J> {
     a: I,
     b: J,
     a0: Option<Operation>,
-    b0: Option<RangeOperation>,
+    b0: Option<RangeOperation<'a>>,
 }
 
-impl<I, J> Iterator for PosTransformer<I, J>
+impl<'a, I, J> Iterator for PosTransformer<'a, I, J>
 where
     I: Iterator<Item = Operation>,
-    J: Iterator<Item = RangeOperation>,
+    J: Iterator<Item = RangeOperation<'a>>,
 {
-    type Item = RangeOperation;
+    type Item = RangeOperation<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
         use short_ordering::*;
         let res = match (&self.a0, &self.b0) {
             (None, None) => None,
-            (_, Some(RangeOperation::BeforeMarker)) => Some(RangeOperation::BeforeMarker),
+            (_, Some(RangeOperation::Start(_))) => Some(self.b0.take().unwrap()),
             (Some(Operation::Insert(s)), _) => Some(RangeOperation::Retain(s.len())),
-            (_, Some(RangeOperation::AfterMarker)) => Some(RangeOperation::AfterMarker),
+            (_, Some(RangeOperation::End(_))) => Some(self.b0.take().unwrap()),
             (None, _) => panic!("different lengths"),
             (_, None) => panic!("different lengths"),
             (Some(Operation::Retain(n)), Some(RangeOperation::Retain(m))) => match n.cmp(m) {
