@@ -1,3 +1,5 @@
+//! TextRange borrowed from rust-analyzer
+
 use core::fmt;
 use std::{
     cmp::{self, Ordering},
@@ -140,13 +142,18 @@ impl TextRange {
 /// Manipulation methods.
 impl TextRange {
     #[inline]
-    pub fn with_start(self, start: usize) -> Self {
-        TextRange::new(start, self.end())
+    pub fn map_start<F: FnOnce(usize) -> usize>(self, f: F) -> Self {
+        TextRange::new(f(self.start()), self.end())
     }
 
     #[inline]
-    pub fn with_end(self, end: usize) -> Self {
-        TextRange::new(self.start(), end)
+    pub fn map_end<F: FnOnce(usize) -> usize>(self, f: F) -> Self {
+        TextRange::new(self.start(), f(self.end()))
+    }
+
+    #[inline]
+    pub fn with_start(self, start: usize) -> Self {
+        TextRange::new(start, self.end())
     }
 
     #[inline]

@@ -121,3 +121,7 @@ pub use state::State;
 
 pub use line_ending::{LineEnding, DEFAULT_LINE_ENDING};
 pub use transaction::{Assoc, Change, ChangeSet, Operation, Transaction};
+
+pub use text_range::TextRange;
+
+slotmap::new_key_type! { pub struct MarkedRangeId; }

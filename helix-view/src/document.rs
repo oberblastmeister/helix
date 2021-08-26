@@ -1,5 +1,7 @@
 use anyhow::{anyhow, Context, Error};
+use helix_core::{TextRange, MarkedRangeId};
 use serde::de::{self, Deserialize, Deserializer};
+use slotmap::HopSlotMap;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -68,6 +70,7 @@ pub struct Document {
     pub(crate) id: DocumentId,
     text: Rope,
     pub(crate) selections: HashMap<ViewId, Selection>,
+    pub(crate) marked_ranges: HopSlotMap<MarkedRangeId, TextRange>,
 
     path: Option<PathBuf>,
     encoding: &'static encoding_rs::Encoding,
@@ -332,6 +335,7 @@ impl Document {
             encoding,
             text,
             selections: HashMap::default(),
+            marked_ranges: HopSlotMap::default(),
             indent_style: IndentStyle::Spaces(4),
             mode: Mode::Normal,
             restore_cursor: false,
@@ -606,6 +610,18 @@ impl Document {
             .insert(view_id, selection.ensure_invariants(self.text().slice(..)));
     }
 
+    pub fn set_marked_range(&mut self, range: TextRange) -> MarkedRangeId {
+        self.marked_ranges.insert(range)
+    }
+
+    pub fn get_marked_range(&mut self, id: MarkedRangeId) -> Option<TextRange> {
+        self.marked_ranges.get(id).copied()
+    }
+
+    pub fn remove_marked_range(&mut self, id: MarkedRangeId) -> Option<TextRange> {
+        self.marked_ranges.remove(id)
+    }
+
     /// Apply a [`Transaction`] to the [`Document`] to change its text.
     fn apply_impl(&mut self, transaction: &Transaction, view_id: ViewId) -> bool {
         let old_doc = self.text().clone();
@@ -620,6 +636,10 @@ impl Document {
                     .map(transaction.changes())
                     // Ensure all selections accross all views still adhere to invariants.
                     .ensure_invariants(self.text.slice(..));
+            }
+
+            for marked_range in self.marked_ranges.values_mut() {
+                *marked_range = transaction.changes().map_text_range(*marked_range);
             }
 
             // if specified, the current selection should instead be replaced by transaction.selection
@@ -677,6 +697,7 @@ impl Document {
             self.old_state = Some(State {
                 doc: self.text.clone(),
                 selection: self.selection(view_id).clone(),
+                marked_ranges: self.marked_ranges.clone(),
             });
         }
 

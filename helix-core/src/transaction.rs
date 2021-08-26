@@ -1,4 +1,4 @@
-use crate::{Range, Rope, Selection, Tendril};
+use crate::{Range, Rope, Selection, Tendril, TextRange};
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::cmp::Ordering;
@@ -344,6 +344,13 @@ impl ChangeSet {
         self.changes.is_empty()
     }
 
+    pub fn map_text_range(&self, range: TextRange) -> TextRange {
+        TextRange::new(
+            self.map_pos(range.start(), Assoc::After),
+            self.map_pos(range.end(), Assoc::Before),
+        )
+    }
+
     /// Map a position through the changes.
     ///
     /// `assoc` indicates which size to associate the position with. `Before` will keep the
@@ -536,72 +543,6 @@ impl Transaction {
 
     pub fn changes_iter(&self) -> ChangeIterator {
         self.changes.changes_iter()
-    }
-}
-
-pub fn transform_pos<'a, I, J>(
-    operations: I,
-    range_operations: J,
-) -> PosTransformer<'a, I::IntoIter, J::IntoIter>
-where
-    I: IntoIterator<Item = Operation>,
-    J: IntoIterator<Item = RangeOperation<'a>>,
-{
-    let mut a = operations.into_iter();
-    let mut b = range_operations.into_iter();
-    let a0 = a.next();
-    let b0 = b.next();
-    PosTransformer { a, b, a0, b0 }
-}
-pub struct PosTransformer<'a, I, J> {
-    a: I,
-    b: J,
-    a0: Option<Operation>,
-    b0: Option<RangeOperation<'a>>,
-}
-
-impl<'a, I, J> Iterator for PosTransformer<'a, I, J>
-where
-    I: Iterator<Item = Operation>,
-    J: Iterator<Item = RangeOperation<'a>>,
-{
-    type Item = RangeOperation<'a>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        use short_ordering::*;
-        let res = match (&self.a0, &self.b0) {
-            (None, None) => None,
-            (_, Some(RangeOperation::Start(_))) => Some(self.b0.take().unwrap()),
-            (Some(Operation::Insert(s)), _) => Some(RangeOperation::Retain(s.len())),
-            (_, Some(RangeOperation::End(_))) => Some(self.b0.take().unwrap()),
-            (None, _) => panic!("different lengths"),
-            (_, None) => panic!("different lengths"),
-            (Some(Operation::Retain(n)), Some(RangeOperation::Retain(m))) => match n.cmp(m) {
-                LT => {
-                    self.b0 = Some(RangeOperation::Retain(m - n));
-                    return Some(RangeOperation::Retain(*n));
-                }
-                EQ => Some(RangeOperation::Retain(*n)),
-                GT => {
-                    self.a0 = Some(Operation::Retain(n - m));
-                    return Some(RangeOperation::Retain(*m));
-                }
-            },
-            (Some(Operation::Delete(n)), Some(RangeOperation::Retain(m))) => match n.cmp(m) {
-                LT => {
-                    self.b0 = Some(RangeOperation::Retain(m - n));
-                    return self.next();
-                }
-                EQ => return self.next(),
-                GT => {
-                    self.a0 = Some(Operation::Delete(n - m));
-                    return self.next();
-                }
-            },
-        };
-        self.a0 = self.a.next();
-        self.b0 = self.b.next();
-        res
     }
 }
 

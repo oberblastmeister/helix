@@ -313,6 +313,7 @@ dependencies = [
  "ropey",
  "serde",
  "similar",
+ "slotmap",
  "smallvec",
  "tendril",
  "toml",
