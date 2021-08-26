@@ -1,5 +1,10 @@
 use crate::{Range, Rope, Selection, Tendril};
 use std::borrow::Cow;
+use std::cmp::Ordering;
+
+mod short_ordering {
+    pub use std::cmp::Ordering::{Equal as EQ, Greater as GT, Less as LT};
+}
 
 /// (from, to, replacement)
 pub type Change = (usize, usize, Option<Tendril>);
@@ -13,6 +18,13 @@ pub enum Operation {
     Delete(usize),
     /// Insert text at position.
     Insert(Tendril),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RangeOperation {
+    Retain(usize),
+    BeforeMarker,
+    AfterMarker,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -525,6 +537,72 @@ impl Transaction {
     }
 }
 
+pub fn transform_pos<I, J>(
+    operations: I,
+    range_operations: J,
+) -> PosTransformer<I::IntoIter, J::IntoIter>
+where
+    I: IntoIterator<Item = Operation>,
+    J: IntoIterator<Item = RangeOperation>,
+{
+    let mut a = operations.into_iter();
+    let mut b = range_operations.into_iter();
+    let a0 = a.next();
+    let b0 = b.next();
+    PosTransformer { a, b, a0, b0 }
+}
+pub struct PosTransformer<I, J> {
+    a: I,
+    b: J,
+    a0: Option<Operation>,
+    b0: Option<RangeOperation>,
+}
+
+impl<I, J> Iterator for PosTransformer<I, J>
+where
+    I: Iterator<Item = Operation>,
+    J: Iterator<Item = RangeOperation>,
+{
+    type Item = RangeOperation;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        use short_ordering::*;
+        let res = match (&self.a0, &self.b0) {
+            (None, None) => None,
+            (_, Some(RangeOperation::BeforeMarker)) => Some(RangeOperation::BeforeMarker),
+            (Some(Operation::Insert(s)), _) => Some(RangeOperation::Retain(s.len())),
+            (_, Some(RangeOperation::AfterMarker)) => Some(RangeOperation::AfterMarker),
+            (None, _) => panic!("different lengths"),
+            (_, None) => panic!("different lengths"),
+            (Some(Operation::Retain(n)), Some(RangeOperation::Retain(m))) => match n.cmp(m) {
+                LT => {
+                    self.b0 = Some(RangeOperation::Retain(m - n));
+                    return Some(RangeOperation::Retain(*n));
+                }
+                EQ => Some(RangeOperation::Retain(*n)),
+                GT => {
+                    self.a0 = Some(Operation::Retain(n - m));
+                    return Some(RangeOperation::Retain(*m));
+                }
+            },
+            (Some(Operation::Delete(n)), Some(RangeOperation::Retain(m))) => match n.cmp(m) {
+                LT => {
+                    self.b0 = Some(RangeOperation::Retain(m - n));
+                    return self.next();
+                }
+                EQ => return self.next(),
+                GT => {
+                    self.a0 = Some(Operation::Delete(n - m));
+                    return self.next();
+                }
+            },
+        };
+        self.a0 = self.a.next();
+        self.b0 = self.b.next();
+        res
+    }
+}
+
 impl From<ChangeSet> for Transaction {
     fn from(changes: ChangeSet) -> Self {
         Self {
@@ -658,6 +736,7 @@ mod test {
         assert_eq!(cs.map_pos(4, Assoc::Before), 4); // at insert, track before
         assert_eq!(cs.map_pos(4, Assoc::After), 6); // at insert, track after
         assert_eq!(cs.map_pos(5, Assoc::Before), 7); // after insert region
+        assert_eq!(cs.map_pos(7, Assoc::After), 9);
 
         // maps deletes
         let cs = ChangeSet {
@@ -669,6 +748,7 @@ mod test {
         assert_eq!(cs.map_pos(4, Assoc::Before), 4); // before a delete
         assert_eq!(cs.map_pos(5, Assoc::Before), 4); // inside a delete
         assert_eq!(cs.map_pos(5, Assoc::After), 4); // inside a delete
+        assert_eq!(cs.map_pos(12, Assoc::After), 8);
 
         // TODO: delete tracking
 
@@ -685,6 +765,7 @@ mod test {
         };
         assert_eq!(cs.map_pos(2, Assoc::Before), 2);
         assert_eq!(cs.map_pos(2, Assoc::After), 2);
+        assert_eq!(cs.map_pos(4, Assoc::After), 4);
     }
 
     #[test]
