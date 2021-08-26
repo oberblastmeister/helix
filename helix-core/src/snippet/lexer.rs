@@ -1,7 +1,7 @@
 use std::str::Chars;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-enum TokenKind {
+pub enum TokenKind {
     Int,
     Dollar,
     LBrace,
@@ -9,22 +9,23 @@ enum TokenKind {
     Comma,
     Pipe,
     Colon,
-    Eof,
     Text,
+    Eof,
 }
 
-struct Token {
-    kind: TokenKind,
-    len: u32,
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct Token {
+    pub kind: TokenKind,
+    pub len: u32,
 }
 
-struct Lexer<'a> {
+pub struct Lexer<'a> {
     chars: Chars<'a>,
     input_len: u32,
 }
 
 impl<'a> Lexer<'a> {
-    fn new(input: &'a str) -> Lexer<'a> {
+    pub fn new(input: &'a str) -> Lexer<'a> {
         Lexer {
             chars: input.chars(),
             input_len: input.len() as u32,
@@ -66,7 +67,10 @@ impl<'a> Lexer<'a> {
         let start = self.pos();
         let kind = self.lex_impl()?;
         let end = self.pos();
-        Some(Token { kind, len: start - end})
+        Some(Token {
+            kind,
+            len: start - end,
+        })
     }
 
     fn lex_impl(&mut self) -> Option<TokenKind> {
@@ -91,12 +95,12 @@ impl<'a> Lexer<'a> {
             }
         })
     }
+}
 
-    // fn lex_text(&mut self) -> TokenKind {
-    //     match self.chars.next() {
-    //         '\\' => {
-    //             // match self.chars.ne
-    //         }
-    //     }
-    // }
+impl<'a> Iterator for Lexer<'a> {
+    type Item = Token;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.lex()
+    }
 }
