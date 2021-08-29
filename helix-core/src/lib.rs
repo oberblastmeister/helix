@@ -21,7 +21,9 @@ pub mod surround;
 pub mod syntax;
 pub mod textobject;
 mod transaction;
-mod text_range;
+pub mod text_range;
+pub mod marked_range;
+pub mod iter_ext;
 
 pub mod unicode {
     pub use unicode_general_category as category;

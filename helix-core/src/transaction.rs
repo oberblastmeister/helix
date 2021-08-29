@@ -1,4 +1,5 @@
 use crate::{Range, Rope, Selection, Tendril, TextRange};
+use itertools::Itertools;
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::cmp::Ordering;
@@ -35,6 +36,36 @@ pub enum Assoc {
     After,
 }
 
+fn combine(o1: Operation, o2: Operation) -> Result<Operation, (Operation, Operation)> {
+    use Operation::*;
+    Ok(match (o1, o2) {
+        (Insert(mut s1), Insert(s2)) => {
+            s1.push_tendril(&s2);
+            Insert(s1)
+        }
+        (Delete(n), Delete(m)) => Delete(n + m),
+        (Retain(n), Retain(m)) => Retain(n + m),
+        (o1 @ Insert(_), o2 @ Delete(_)) => return Err((o2, o1)),
+        (o1, o2) => return Err((o1, o2)),
+    })
+}
+
+// fn coelesce_operations<I>(iter: I) -> impl Iterator<Item = Operation>
+// where
+// I: Iterator<Item = Operation>,
+// {
+//     use Operation::*;
+//     iter.coelesce(|a, b|
+//                   match (a, b) {
+//         (Insert(s1), Insert(s2)) => {
+//             s1.push_tendril(&s2);
+//             Insert(s1)
+//         },
+//         (Delete(n), Delete(m)) => Delete(n + m),
+//         (Retain(n), Retain(m)) => Retain(n + m),
+
+//     })
+// }
 // ChangeSpec = Change | ChangeSet | Vec<Change>
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChangeSet {
@@ -149,11 +180,11 @@ impl ChangeSet {
 
         let len = self.changes.len();
 
-        let mut changes_a = self.changes.into_iter();
-        let mut changes_b = other.changes.into_iter();
+        let mut a = self.changes.into_iter();
+        let mut b = other.changes.into_iter();
 
-        let mut head_a = changes_a.next();
-        let mut head_b = changes_b.next();
+        let mut head_a = a.next();
+        let mut head_b = b.next();
 
         let mut changes = Self::with_capacity(len); // TODO: max(a, b), shrink_to_fit() afterwards
 
@@ -168,43 +199,43 @@ impl ChangeSet {
                 // deletion in A
                 (Some(Delete(i)), b) => {
                     changes.delete(i);
-                    head_a = changes_a.next();
+                    head_a = a.next();
                     head_b = b;
                 }
                 // insertion in B
                 (a, Some(Insert(current))) => {
                     changes.insert(current);
                     head_a = a;
-                    head_b = changes_b.next();
+                    head_b = b.next();
                 }
                 (None, val) | (val, None) => unreachable!("({:?})", val),
                 (Some(Retain(i)), Some(Retain(j))) => match i.cmp(&j) {
                     Ordering::Less => {
                         changes.retain(i);
-                        head_a = changes_a.next();
+                        head_a = a.next();
                         head_b = Some(Retain(j - i));
                     }
                     Ordering::Equal => {
                         changes.retain(i);
-                        head_a = changes_a.next();
-                        head_b = changes_b.next();
+                        head_a = a.next();
+                        head_b = b.next();
                     }
                     Ordering::Greater => {
                         changes.retain(j);
                         head_a = Some(Retain(i - j));
-                        head_b = changes_b.next();
+                        head_b = b.next();
                     }
                 },
                 (Some(Insert(mut s)), Some(Delete(j))) => {
                     let len = s.chars().count();
                     match len.cmp(&j) {
                         Ordering::Less => {
-                            head_a = changes_a.next();
+                            head_a = a.next();
                             head_b = Some(Delete(j - len));
                         }
                         Ordering::Equal => {
-                            head_a = changes_a.next();
-                            head_b = changes_b.next();
+                            head_a = a.next();
+                            head_b = b.next();
                         }
                         Ordering::Greater => {
                             // TODO: cover this with a test
@@ -212,7 +243,7 @@ impl ChangeSet {
                             let (pos, _) = s.char_indices().nth(j).unwrap();
                             s.pop_front(pos as u32);
                             head_a = Some(Insert(s));
-                            head_b = changes_b.next();
+                            head_b = b.next();
                         }
                     }
                 }
@@ -221,13 +252,13 @@ impl ChangeSet {
                     match len.cmp(&j) {
                         Ordering::Less => {
                             changes.insert(s);
-                            head_a = changes_a.next();
+                            head_a = a.next();
                             head_b = Some(Retain(j - len));
                         }
                         Ordering::Equal => {
                             changes.insert(s);
-                            head_a = changes_a.next();
-                            head_b = changes_b.next();
+                            head_a = a.next();
+                            head_b = b.next();
                         }
                         Ordering::Greater => {
                             // figure out the byte index of the truncated string end
@@ -235,25 +266,25 @@ impl ChangeSet {
                             let pos = pos as u32;
                             changes.insert(s.subtendril(0, pos));
                             head_a = Some(Insert(s.subtendril(pos, s.len() as u32 - pos)));
-                            head_b = changes_b.next();
+                            head_b = b.next();
                         }
                     }
                 }
                 (Some(Retain(i)), Some(Delete(j))) => match i.cmp(&j) {
                     Ordering::Less => {
                         changes.delete(i);
-                        head_a = changes_a.next();
+                        head_a = a.next();
                         head_b = Some(Delete(j - i));
                     }
                     Ordering::Equal => {
                         changes.delete(j);
-                        head_a = changes_a.next();
-                        head_b = changes_b.next();
+                        head_a = a.next();
+                        head_b = b.next();
                     }
                     Ordering::Greater => {
                         changes.delete(j);
                         head_a = Some(Retain(i - j));
-                        head_b = changes_b.next();
+                        head_b = b.next();
                     }
                 },
             };

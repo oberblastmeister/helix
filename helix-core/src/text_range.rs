@@ -12,7 +12,7 @@ use ropey::{Rope, RopeSlice};
 /// A range in text, represented as a pair of [`TextSize`][struct@TextSize].
 ///
 /// It is a logic error for `start` to be greater than `end`.
-#[derive(Default, Copy, Clone, Eq, PartialEq, Hash)]
+#[derive(Default, Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash)]
 pub struct TextRange {
     // Invariant: start <= end
     start: u32,
