@@ -127,3 +127,5 @@ pub use transaction::{Assoc, Change, ChangeSet, Operation, Transaction};
 pub use text_range::TextRange;
 
 slotmap::new_key_type! { pub struct MarkedRangeId; }
+
+pub use iter_ext::IterExt;

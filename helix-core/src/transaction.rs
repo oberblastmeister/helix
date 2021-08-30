@@ -1,8 +1,6 @@
-use crate::{Range, Rope, Selection, Tendril, TextRange};
+use crate::{marked_range::MarkedRangeId, IterExt, Range, Rope, Selection, Tendril, TextRange};
 use itertools::Itertools;
-use std::borrow::Cow;
-use std::cell::Cell;
-use std::cmp::Ordering;
+use std::{borrow::Cow, iter};
 
 mod short_ordering {
     pub use std::cmp::Ordering::{Equal as EQ, Greater as GT, Less as LT};
@@ -20,15 +18,32 @@ pub enum Operation {
     Delete(usize),
     /// Insert text at position.
     Insert(Tendril),
+    // MarkedRangeStart(MarkedRangeId),
+    // MarkedRangeEnd(MarkedRangeId),
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum RangeOperation<'a> {
-    Retain(usize),
-    // holds references to the positions
-    Start(&'a mut usize),
-    End(&'a mut usize),
+impl Operation {
+    fn coalesce(self, other: Self) -> Result<Self, (Self, Self)> {
+        use Operation::*;
+        Ok(match (self, other) {
+            (Insert(mut s1), Insert(s2)) => {
+                s1.push_tendril(&s2);
+                Insert(s1)
+            }
+            (Delete(n), Delete(m)) => Delete(n + m),
+            (Retain(n), Retain(m)) => Retain(n + m),
+            (o1, o2) => return Err((o1, o2)),
+        })
+    }
 }
+
+// #[derive(Debug, PartialEq, Eq)]
+// pub enum RangeOperation<'a> {
+//     Retain(usize),
+//     // holds references to the positions
+//     Start(&'a mut usize),
+//     End(&'a mut usize),
+// }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Assoc {
@@ -36,37 +51,115 @@ pub enum Assoc {
     After,
 }
 
-fn combine(o1: Operation, o2: Operation) -> Result<Operation, (Operation, Operation)> {
-    use Operation::*;
-    Ok(match (o1, o2) {
-        (Insert(mut s1), Insert(s2)) => {
-            s1.push_tendril(&s2);
-            Insert(s1)
-        }
-        (Delete(n), Delete(m)) => Delete(n + m),
-        (Retain(n), Retain(m)) => Retain(n + m),
-        (o1 @ Insert(_), o2 @ Delete(_)) => return Err((o2, o1)),
-        (o1, o2) => return Err((o1, o2)),
-    })
+trait OperationIterator: Iterator<Item = Operation> {}
+
+struct OperationIter<I>(I);
+
+impl<I> Iterator for OperationIter<I>
+where
+    I: Iterator,
+{
+    type Item = I::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next()
+    }
 }
 
-// fn coelesce_operations<I>(iter: I) -> impl Iterator<Item = Operation>
-// where
-// I: Iterator<Item = Operation>,
-// {
-//     use Operation::*;
-//     iter.coelesce(|a, b|
-//                   match (a, b) {
-//         (Insert(s1), Insert(s2)) => {
-//             s1.push_tendril(&s2);
-//             Insert(s1)
-//         },
-//         (Delete(n), Delete(m)) => Delete(n + m),
-//         (Retain(n), Retain(m)) => Retain(n + m),
+impl<I: Iterator<Item = Operation>> OperationIterator for OperationIter<I> {}
 
-//     })
-// }
-// ChangeSpec = Change | ChangeSet | Vec<Change>
+fn coalesce_operations<I>(iter: I) -> impl OperationIterator
+where
+    I: Iterator<Item = Operation>,
+{
+    use Operation::*;
+    OperationIter(
+        iter.coalesce(|a, b| match (a, b) {
+            (a @ Delete(_), b @ Insert(_)) => Err((b, a)),
+            (a, b) => Err((a, b)),
+        })
+        .coalesce(Operation::coalesce),
+    )
+}
+
+fn compose(i: impl OperationIterator, j: impl OperationIterator) -> impl OperationIterator {
+    let mut i = i.speekable();
+    let mut j = j.speekable();
+    coalesce_operations(iter::from_fn(move || {
+        use std::cmp::Ordering::*;
+        use Operation::*;
+        loop {
+            break Some(match (i.next(), j.next()) {
+                (None, None) => return None,
+                (Some(Delete(n)), b) => {
+                    j.set_peek(b);
+                    Delete(n)
+                }
+                (a, Some(Insert(m))) => {
+                    i.set_peek(a);
+                    Insert(m)
+                }
+                // (Some(MarkedRangeStart(id1)), Some(MarkedRangeStart(id2))) if id1 == id2 => {
+                //     MarkedRangeStart(id1)
+                // }
+                // (Some(MarkedRangeEnd(id1)), Some(MarkedRangeEnd(id2))) if id1 == id2 => {
+                //     MarkedRangeEnd(id1)
+                // }
+                (None, val) | (val, None) => unreachable!("({:?})", val),
+                (Some(Retain(n)), Some(Retain(m))) => match n.cmp(&m) {
+                    Less => {
+                        j.set_peek(Some(Retain(m - n)));
+                        Retain(n)
+                    }
+                    Equal => Retain(n),
+                    Greater => {
+                        i.set_peek(Some(Retain(n - m)));
+                        Retain(m)
+                    }
+                },
+                (Some(Insert(mut s)), Some(Delete(m))) => {
+                    let len = s.chars().count();
+                    match len.cmp(&m) {
+                        Less => {
+                            j.set_peek(Some(Delete(m - len)));
+                            continue;
+                        }
+                        Equal => {
+                            continue;
+                        }
+                        Greater => {
+                            // TODO: cover this with a test
+                            // figure out the byte index of the truncated string end
+                            let (pos, _) = s.char_indices().nth(m).unwrap();
+                            s.pop_front(pos as u32);
+                            i.set_peek(Some(Insert(s)));
+                            continue;
+                        }
+                    }
+                }
+                (Some(Insert(s)), Some(Retain(m))) => {
+                    let len = s.chars().count();
+                    match len.cmp(&m) {
+                        Less => {
+                            j.set_peek(Some(Retain(m - len)));
+                            Insert(s)
+                        }
+                        Equal => Insert(s),
+                        Greater => {
+                            // figure out the byte index of the truncated string end
+                            let (pos, _) = s.char_indices().nth(m).unwrap();
+                            let pos = pos as u32;
+                            i.set_peek(Some(Insert(s.subtendril(pos, s.len() as u32 - pos))));
+                            Insert(s.subtendril(0, pos))
+                        }
+                    }
+                }
+                _ => todo!(),
+            });
+        }
+    }))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChangeSet {
     pub(crate) changes: Vec<Operation>,
@@ -208,6 +301,15 @@ impl ChangeSet {
                     head_a = a;
                     head_b = b.next();
                 }
+                // (Some(MarkedRangeStart(id)), _) | (_, Some(MarkedRangeStart(id))) => {
+                // unimplemented!()
+                // }
+                // (Some(MarkedRangeEnd(id)), _) | (_, Some(MarkedRangeEnd(id))) => unimplemented!(),
+                // (Some(MarkedRangeStart(_) | MarkedRangeEnd(_)), _) => {
+                //     unimplemented!()
+                // }
+                // (_, Some(MarkedRangeStart(_) | MarkedRangeEnd(_))) => {
+                // }
                 (None, val) | (val, None) => unreachable!("({:?})", val),
                 (Some(Retain(i)), Some(Retain(j))) => match i.cmp(&j) {
                     Ordering::Less => {
@@ -287,6 +389,7 @@ impl ChangeSet {
                         head_b = b.next();
                     }
                 },
+                _ => unimplemented!(),
             };
         }
 
@@ -336,6 +439,7 @@ impl ChangeSet {
                     let chars = s.chars().count();
                     changes.delete(chars);
                 }
+                _ => unimplemented!(),
             }
         }
 
@@ -364,6 +468,7 @@ impl ChangeSet {
                     text.insert(pos, s);
                     pos += s.chars().count();
                 }
+                _ => unimplemented!(),
             }
         }
         true
@@ -399,6 +504,7 @@ impl ChangeSet {
             let len = match change {
                 Delete(i) | Retain(i) => *i,
                 Insert(_) => 0,
+                _ => unimplemented!(),
             };
             let mut old_end = old_pos + len;
 
@@ -448,6 +554,7 @@ impl ChangeSet {
 
                     new_pos += ins;
                 }
+                _ => unimplemented!(),
             }
             old_pos = old_end;
         }
@@ -626,6 +733,7 @@ impl<'a> Iterator for ChangeIterator<'a> {
                         return Some((start, start, Some(s.clone())));
                     }
                 }
+                _ => unimplemented!(),
             }
         }
     }
